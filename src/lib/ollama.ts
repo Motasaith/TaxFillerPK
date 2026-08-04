@@ -3,6 +3,8 @@ import type { Settings } from './types';
 export interface OllamaMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Base64 page images, no data prefix. Only a multimodal model reads these. */
+  images?: string[];
 }
 
 export class OllamaError extends Error {
@@ -16,6 +18,20 @@ export class OllamaError extends Error {
     this.retryOther = retryOther;
   }
 }
+
+/** Thrown when the chosen model cannot accept the images we sent. */
+export class NoVisionError extends OllamaError {
+  constructor(detail: string) {
+    super(
+      'The model cannot read images.',
+      `${detail} Turn off "Send page images" in Settings, or switch to a model that accepts pictures.`,
+    );
+    this.name = 'NoVisionError';
+  }
+}
+
+/** How a text only model complains when a request carries images. */
+const VISION_REJECTION = /image|vision|multimodal|modality|does not support/i;
 
 /** Route used for a single attempt. */
 type Route = 'direct' | 'relay';
@@ -149,6 +165,14 @@ async function send(
       'Confirm the model name in Settings. The default is gemma4:31b-cloud.',
     );
   }
+  // A text only model rejects a request carrying images, usually with a 400.
+  const carriesImages = Array.isArray((body as { messages?: OllamaMessage[] })?.messages)
+    ? (body as { messages: OllamaMessage[] }).messages.some((m) => m.images?.length)
+    : false;
+  if (carriesImages && (res.status === 400 || res.status === 500) && VISION_REJECTION.test(detail)) {
+    throw new NoVisionError(detail);
+  }
+
   if (res.status === 429) {
     throw new OllamaError('Rate limit reached on your Ollama account.', 'Wait a minute and try again.');
   }

@@ -11,7 +11,8 @@ import { Card, CardTitle, EmptyState, Notice as NoticeBox, Spinner } from '@/com
 import { ConfirmModal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { analyseNotice } from '@/lib/ai';
-import { describeKind, extractText, type ExtractResult } from '@/lib/extract';
+import { extractText, LOW_CONFIDENCE, type ExtractResult } from '@/lib/extract';
+import { describeSource } from '@/components/app/ScanView';
 import { fmtDate, uid } from '@/lib/format';
 import { OllamaError } from '@/lib/ollama';
 import { useStore } from '@/lib/store';
@@ -47,7 +48,8 @@ export function NoticesView() {
       const extracted = await extractText(picked, { onProgress: setProgress });
       setResult(extracted);
       setPhase('extracted');
-      if (extracted.text.replace(/\s/g, '').length < 40) {
+      const canSendImage = settings.vision && extracted.images.length > 0;
+      if (extracted.text.replace(/\s/g, '').length < 40 && !canSendImage) {
         toast('Very little text was read', {
           body: 'A flatter, brighter scan of the notice usually fixes this.',
           tone: 'error',
@@ -71,7 +73,12 @@ export function NoticesView() {
 
     setPhase('analysing');
     try {
-      const analysis = await analyseNotice(settings, result.text);
+      const analysis = await analyseNotice(settings, {
+        text: result.text,
+        images: result.images,
+        confidence: result.confidence,
+        usedOCR: result.usedOCR,
+      });
       const stored: StoredNotice = {
         ...analysis,
         id: uid('n'),
@@ -155,11 +162,7 @@ export function NoticesView() {
               <CardTitle
                 icon={<FileWarning size={17} />}
                 title={file.name}
-                hint={
-                  result
-                    ? `${describeKind(result.kind)}, ${result.text.length.toLocaleString('en-PK')} characters read`
-                    : 'Reading the file'
-                }
+                hint={result ? describeSource(result, settings.vision) : 'Reading the file'}
               />
               {phase === 'extracting' ? <ProgressBar pct={progress.pct} label={progress.stage} /> : null}
               {result ? (
@@ -171,10 +174,22 @@ export function NoticesView() {
           ) : null}
 
           {phase === 'extracted' ? (
-            <Button variant="accent" className="w-full" onClick={analyse} disabled={!hasAI}>
-              <Sparkles size={16} />
-              Analyse this notice
-            </Button>
+            <>
+              {result &&
+              result.usedOCR &&
+              (result.confidence ?? 100) < LOW_CONFIDENCE &&
+              settings.vision &&
+              result.images.length ? (
+                <NoticeBox tone="brass" className="mb-4">
+                  The transcript above is poor, which is usual for a photographed notice. The page
+                  image is sent to the model too, so it reads the letter itself rather than that text.
+                </NoticeBox>
+              ) : null}
+              <Button variant="accent" className="w-full" onClick={analyse} disabled={!hasAI}>
+                <Sparkles size={16} />
+                Analyse this notice
+              </Button>
+            </>
           ) : null}
         </div>
 

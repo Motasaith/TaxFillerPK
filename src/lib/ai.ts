@@ -1,4 +1,5 @@
-import { extractJSON, ollamaChat, OllamaError, type OllamaMessage } from './ollama';
+import { extractJSON, NoVisionError, ollamaChat, OllamaError, type OllamaMessage } from './ollama';
+import { LOW_CONFIDENCE } from './extract';
 import { ADVISOR_SYSTEM, buildLedgerContext, NOTICE_SYSTEM, SCAN_SYSTEM } from './prompts';
 import { todayISO } from './format';
 import {
@@ -13,6 +14,63 @@ import {
 } from './types';
 
 const MAX_INPUT_CHARS = 9000;
+
+/** What the reader produced from a file, plus how much to trust it. */
+export interface DocSource {
+  text: string;
+  images: string[];
+  confidence?: number;
+  usedOCR: boolean;
+}
+
+/**
+ * Builds the user turn. When we hold page images and the model can see them,
+ * the picture leads and the recognised text is offered only as a hint, marked
+ * as unreliable when the engine itself was unsure. That way a poor scan stops
+ * being fatal: the model reads the page rather than our garbled transcript.
+ */
+function buildInput(source: DocSource, settings: Settings, preamble: string): OllamaMessage {
+  const useImages = settings.vision && source.images.length > 0;
+  const text = source.text.slice(0, MAX_INPUT_CHARS).trim();
+  const shaky = source.usedOCR && (source.confidence ?? 100) < LOW_CONFIDENCE;
+
+  if (!useImages) {
+    return { role: 'user', content: `${preamble}\n\nDocument text:\n\n${text}` };
+  }
+
+  const note = shaky
+    ? 'Character recognition on this page scored poorly, so the transcript below is likely to be wrong. Read the attached image and treat the transcript only as a weak hint.'
+    : 'Read the attached image. A character recognition transcript follows, which you may use to confirm exact figures and spellings.';
+
+  return {
+    role: 'user',
+    content: `${preamble}\n\n${note}\n\nTranscript:\n\n${text || '(nothing legible)'}`,
+    images: source.images.slice(0, 3),
+  };
+}
+
+/**
+ * Runs a request that may carry images, retrying without them if the model
+ * turns out to be text only.
+ */
+async function askWithImages(
+  settings: Settings,
+  system: string,
+  input: OllamaMessage,
+): Promise<string> {
+  try {
+    return await ollamaChat({ settings, messages: [{ role: 'system', content: system }, input], json: true });
+  } catch (err) {
+    if (!(err instanceof NoVisionError) || !input.images?.length) throw err;
+    const { images, ...textOnly } = input;
+    void images;
+    return ollamaChat({
+      settings,
+      messages: [{ role: 'system', content: system }, textOnly],
+      json: true,
+    });
+  }
+}
 
 function toNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -53,18 +111,11 @@ export type DraftDoc = Omit<TaxDoc, 'id' | 'createdAt'>;
 /** Reads one uploaded document and returns fields for the review form. */
 export async function analyseDocument(
   settings: Settings,
-  rawText: string,
+  source: DocSource,
   fileName: string,
 ): Promise<DraftDoc> {
-  const messages: OllamaMessage[] = [
-    { role: 'system', content: SCAN_SYSTEM },
-    {
-      role: 'user',
-      content: `Today is ${todayISO()}. File name: ${fileName}\n\nDocument text:\n\n${rawText.slice(0, MAX_INPUT_CHARS)}`,
-    },
-  ];
-
-  const reply = await ollamaChat({ settings, messages, json: true });
+  const input = buildInput(source, settings, `Today is ${todayISO()}. File name: ${fileName}`);
+  const reply = await askWithImages(settings, SCAN_SYSTEM, input);
   const data = extractJSON<Record<string, unknown>>(reply);
   if (!data) {
     throw new OllamaError(
@@ -84,7 +135,7 @@ export async function analyseDocument(
     ntnCnic: toText(data.ntn_cnic),
     summary: toText(data.summary),
     advice: toText(data.tax_advice),
-    rawText: rawText.slice(0, 6000),
+    rawText: source.text.slice(0, 6000),
     fileName,
   };
 }
@@ -92,16 +143,16 @@ export async function analyseDocument(
 const RISK_LEVELS: NoticeAnalysis['riskLevel'][] = ['Low', 'Medium', 'High', 'Critical'];
 
 /** Reads an FBR notice and returns the assessment plus a reply draft. */
-export async function analyseNotice(settings: Settings, rawText: string): Promise<NoticeAnalysis> {
-  const messages: OllamaMessage[] = [
-    { role: 'system', content: NOTICE_SYSTEM },
-    {
-      role: 'user',
-      content: `Today is ${todayISO()}. Taxpayer name on record: ${settings.name || 'not provided'}. NTN or CNIC: ${settings.ntn || 'not provided'}.\n\nNotice text:\n\n${rawText.slice(0, MAX_INPUT_CHARS)}`,
-    },
-  ];
-
-  const reply = await ollamaChat({ settings, messages, json: true });
+export async function analyseNotice(
+  settings: Settings,
+  source: DocSource,
+): Promise<NoticeAnalysis> {
+  const input = buildInput(
+    source,
+    settings,
+    `Today is ${todayISO()}. Taxpayer name on record: ${settings.name || 'not provided'}. NTN or CNIC: ${settings.ntn || 'not provided'}.`,
+  );
+  const reply = await askWithImages(settings, NOTICE_SYSTEM, input);
   const data = extractJSON<Record<string, unknown>>(reply);
   if (!data) {
     throw new OllamaError(

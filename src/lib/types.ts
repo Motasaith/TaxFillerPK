@@ -94,6 +94,8 @@ export interface Settings {
   baseUrl: string;
   model: string;
   connection: ConnectionMode;
+  /** Send page images to the model. Needs a model that accepts pictures. */
+  vision: boolean;
   name: string;
   ntn: string;
   filer: boolean;
@@ -105,6 +107,7 @@ export const DEFAULT_SETTINGS: Settings = {
   baseUrl: 'https://ollama.com',
   model: 'gemma4:31b-cloud',
   connection: 'auto',
+  vision: true,
   name: '',
   ntn: '',
   filer: true,

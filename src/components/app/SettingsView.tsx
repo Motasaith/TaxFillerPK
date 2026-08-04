@@ -65,6 +65,7 @@ export function SettingsView() {
       baseUrl: form.baseUrl.trim() || 'https://ollama.com',
       model: form.model.trim() || 'gemma4:31b-cloud',
       connection: form.connection,
+      vision: form.vision,
     });
     toast('Connection settings saved');
   }
@@ -228,6 +229,23 @@ export function SettingsView() {
               </button>
             </Notice>
           ) : null}
+
+          <label className="mt-5 flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={form.vision}
+              onChange={(e) => setForm({ ...form, vision: e.target.checked })}
+              className="mt-1 h-4 w-4 accent-forest-700"
+            />
+            <span>
+              <span className="block text-[14px] font-medium">Send page images to the model</span>
+              <span className="mt-0.5 block text-[13px] leading-relaxed text-ink-soft">
+                Lets the model look at the document instead of relying on character recognition,
+                which is far more accurate on photographs and on Urdu. Needs a model that accepts
+                pictures, such as gemma4 or gemma3. Turn this off for a text only model.
+              </span>
+            </span>
+          </label>
 
           <div className="mt-6 flex flex-wrap gap-2.5">
             <Button variant="primary" onClick={saveConnection}>

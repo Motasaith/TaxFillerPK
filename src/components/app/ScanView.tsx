@@ -11,12 +11,24 @@ import { Dropzone, ProgressBar } from '@/components/ui/Dropzone';
 import { Card, CardTitle, EmptyState, Notice, Spinner } from '@/components/ui/Primitives';
 import { useToast } from '@/components/ui/Toast';
 import { analyseDocument, type DraftDoc } from '@/lib/ai';
-import { describeKind, extractText, type ExtractResult } from '@/lib/extract';
+import { describeKind, extractText, LOW_CONFIDENCE, type ExtractResult } from '@/lib/extract';
 import { todayISO, uid } from '@/lib/format';
 import { OllamaError } from '@/lib/ollama';
 import { useStore } from '@/lib/store';
 
 type Phase = 'idle' | 'extracting' | 'extracted' | 'analysing' | 'review';
+
+/** One line describing what was read and what will be sent to the model. */
+export function describeSource(result: ExtractResult, vision: boolean): string {
+  const parts = [describeKind(result.kind)];
+  if (result.pages) parts.push(`${result.pages} page${result.pages > 1 ? 's' : ''}`);
+  parts.push(`${result.text.length.toLocaleString('en-PK')} characters`);
+  if (result.usedOCR && result.confidence !== undefined) {
+    parts.push(`text confidence ${Math.round(result.confidence)}%`);
+  }
+  if (vision && result.images.length) parts.push('page image will be sent to the model');
+  return parts.join(', ');
+}
 
 function blankDraft(fileName: string, rawText: string): DraftDoc {
   return {
@@ -68,7 +80,10 @@ export function ScanView() {
         onProgress: (p) => setProgress(p),
       });
 
-      if (extracted.text.replace(/\s/g, '').length < 12) {
+      const thinText = extracted.text.replace(/\s/g, '').length < 12;
+      const canSendImage = settings.vision && extracted.images.length > 0;
+
+      if (thinText && !canSendImage) {
         setResult(extracted);
         setPhase('extracted');
         toast('Almost no text could be read', {
@@ -99,7 +114,16 @@ export function ScanView() {
 
     setPhase('analysing');
     try {
-      const parsed = await analyseDocument(settings, result.text, file.name);
+      const parsed = await analyseDocument(
+        settings,
+        {
+          text: result.text,
+          images: result.images,
+          confidence: result.confidence,
+          usedOCR: result.usedOCR,
+        },
+        file.name,
+      );
       setDraft(parsed);
       setPhase('review');
     } catch (err) {
@@ -182,11 +206,7 @@ export function ScanView() {
               <CardTitle
                 icon={<FileText size={17} />}
                 title={file.name}
-                hint={
-                  result
-                    ? `${describeKind(result.kind)}${result.pages ? `, ${result.pages} page${result.pages > 1 ? 's' : ''}` : ''}, ${result.text.length.toLocaleString('en-PK')} characters read${result.usedOCR ? ', image recognition used' : ''}`
-                    : 'Reading the file'
-                }
+                hint={result ? describeSource(result, settings.vision) : 'Reading the file'}
               />
               {phase === 'extracting' ? <ProgressBar pct={progress.pct} label={progress.stage} /> : null}
               {result ? (
@@ -219,9 +239,20 @@ export function ScanView() {
           {phase === 'extracted' ? (
             <Card>
               <CardTitle
-                title="Text is ready"
+                title="Ready to read"
                 hint="Let the model pull out the fields, or fill them in yourself."
               />
+              {result &&
+              result.usedOCR &&
+              (result.confidence ?? 100) < LOW_CONFIDENCE &&
+              settings.vision &&
+              result.images.length ? (
+                <Notice tone="brass" className="mb-4">
+                  The text above came out badly, which is normal for a photo of a photocopy. The page
+                  image goes to the model as well, so it can read the document itself rather than
+                  relying on that transcript.
+                </Notice>
+              ) : null}
               <div className="flex flex-col gap-2.5">
                 <Button variant="accent" onClick={runAI} disabled={!hasAI}>
                   <Sparkles size={16} />
