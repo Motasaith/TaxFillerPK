@@ -115,9 +115,3 @@ draft to check before filing or sending. The full position is on `/legal`.
 
 Scope is individual filers: salaried people, freelancers, professionals and sole proprietors.
 Company returns, group structures and full sales tax compliance are out of scope for this version.
-
-## Credit
-
-The idea of pointing a model at a pile of receipts comes from
-[TaxHacker](https://github.com/vas3k/TaxHacker) by vas3k. This project rebuilds it around Pakistani
-rules and adds notice handling, a ledger aware advisor and local slab calculations.

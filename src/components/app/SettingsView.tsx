@@ -17,18 +17,18 @@ import type { ConnectionMode } from '@/lib/types';
 const CONNECTION_OPTIONS: { value: ConnectionMode; label: string; hint: string }[] = [
   {
     value: 'auto',
-    label: 'Direct, with fallback',
-    hint: 'Try the browser to Ollama route first. If the browser blocks it, retry through this site.',
-  },
-  {
-    value: 'direct',
-    label: 'Direct only',
-    hint: 'Never route through this site. Requires a host that allows cross origin calls.',
+    label: 'Automatic',
+    hint: 'Recommended. Relays through this site for ollama.com, and calls a local server on your own machine directly. Falls back to the other route if one fails.',
   },
   {
     value: 'proxy',
-    label: 'Through this site',
-    hint: 'Always relay through the edge function deployed with the site. Nothing is stored there.',
+    label: 'Always through this site',
+    hint: 'Every request goes through the edge function deployed with the site. It forwards your key and stores nothing.',
+  },
+  {
+    value: 'direct',
+    label: 'Always direct',
+    hint: 'Browser straight to the host, no relay. This cannot work with ollama.com, which sends no CORS headers. Use it only for a local Ollama started with OLLAMA_ORIGINS set.',
   },
 ];
 

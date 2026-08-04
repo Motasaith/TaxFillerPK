@@ -7,12 +7,41 @@ export interface OllamaMessage {
 
 export class OllamaError extends Error {
   hint?: string;
-  constructor(message: string, hint?: string) {
+  /** True when the other route is worth trying. Wrong keys and bad models are not. */
+  retryOther: boolean;
+  constructor(message: string, hint?: string, retryOther = false) {
     super(message);
     this.name = 'OllamaError';
     this.hint = hint;
+    this.retryOther = retryOther;
   }
 }
+
+/** Route used for a single attempt. */
+type Route = 'direct' | 'relay';
+
+/**
+ * ollama.com answers a CORS preflight with 405 and no allow-origin header, so a
+ * browser can never call it directly. Only a loopback server, started with
+ * OLLAMA_ORIGINS set, is reachable from the page itself.
+ */
+function isLoopback(base: string): boolean {
+  try {
+    const { hostname } = new URL(base);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+function runningOnLocalhost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const { hostname } = window.location;
+  return hostname === 'localhost' || hostname === '127.0.0.1';
+}
+
+/** Marker the bundled Pages Function sets on every response it produces. */
+const RELAY_MARKER = 'x-taxfillr-relay';
 
 /** Accepts ollama.com, ollama.com/, ollama.com/api or ollama.com/api/chat. */
 export function normaliseBase(raw: string): string {
@@ -60,17 +89,49 @@ async function readError(res: Response): Promise<string> {
 }
 
 async function send(
+  route: Route,
   url: string,
   headers: Record<string, string>,
   body: unknown,
   signal: AbortSignal,
 ): Promise<Response> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  let res: Response;
+
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if (signal.aborted) throw new OllamaError('The request was cancelled or timed out.');
+    // fetch only rejects when the request never completed: blocked, offline or DNS.
+    if (route === 'direct') {
+      throw new OllamaError(
+        'The browser blocked the direct call to Ollama.',
+        'ollama.com sends no CORS headers, so a page cannot call it directly. Set Connection to "Through this site" in Settings.',
+        true,
+      );
+    }
+    throw new OllamaError(
+      'The request to this site never left the browser.',
+      'An ad blocker, privacy extension or offline network is the usual cause. Try again in a window with extensions disabled.',
+      true,
+    );
+  }
+
+  // The relay stamps every response it produces. A 404 without the stamp means
+  // nothing is serving /api/ollama at all.
+  if (route === 'relay' && !res.headers.get(RELAY_MARKER) && (res.status === 404 || res.status === 405)) {
+    throw new OllamaError(
+      'The relay is not running on this site.',
+      runningOnLocalhost()
+        ? 'next dev does not run Cloudflare Functions. Use npm run preview, or point the base URL at a local Ollama server.'
+        : 'Nothing is answering /api/ollama. On Cloudflare Pages this means the functions folder was missing from the deployment.',
+      true,
+    );
+  }
 
   if (res.ok) return res;
 
@@ -79,7 +140,7 @@ async function send(
   if (res.status === 401 || res.status === 403) {
     throw new OllamaError(
       'Ollama rejected the API key.',
-      'Open Settings and paste a fresh key from ollama.com. Keys are shown only once when created.',
+      'Open Settings and paste a fresh key from ollama.com. Keys are shown only once when they are created.',
     );
   }
   if (res.status === 404) {
@@ -93,6 +154,13 @@ async function send(
   }
   if (res.status === 402) {
     throw new OllamaError('Your Ollama account is out of quota.', 'Check your usage on ollama.com.');
+  }
+  if (route === 'relay' && res.status === 502) {
+    throw new OllamaError(
+      'The relay could not reach Ollama.',
+      detail || 'The upstream host refused the connection.',
+      true,
+    );
   }
   throw new OllamaError(`Ollama returned ${res.status}. ${detail}`.trim());
 }
@@ -166,9 +234,11 @@ async function consume(res: Response, onToken?: (token: string) => void): Promis
 /**
  * Calls the Ollama chat endpoint from the browser.
  *
- * Browsers block cross origin calls unless the server sends CORS headers, so
- * when a direct call fails at the network layer we retry through the Cloudflare
- * Pages function bundled with this site. The key is forwarded, never stored.
+ * ollama.com sends no CORS headers, so a browser cannot call it directly and the
+ * request goes through the Cloudflare Pages function bundled with this site. The
+ * key is forwarded and never stored. A loopback base URL is tried directly
+ * first, because a local server can allow the page through OLLAMA_ORIGINS and
+ * the relay running at the edge cannot see it at all.
  */
 export async function ollamaChat(opts: RequestOptions): Promise<string> {
   const { settings, messages, json = false, onToken, timeoutMs = 180_000 } = opts;
@@ -195,39 +265,47 @@ export async function ollamaChat(opts: RequestOptions): Promise<string> {
     Authorization: `Bearer ${settings.apiKey.trim()}`,
   };
 
-  try {
-    const useProxyFirst = settings.connection === 'proxy';
+  // A loopback server can be reached from the page. Anything else has to go
+  // through the relay, so there is no point burning a request on a call the
+  // browser is certain to block.
+  const routes: Route[] =
+    settings.connection === 'direct'
+      ? ['direct']
+      : settings.connection === 'proxy'
+        ? ['relay']
+        : isLoopback(base)
+          ? ['direct', 'relay']
+          : ['relay', 'direct'];
 
-    if (!useProxyFirst) {
+  const attempt = (route: Route) =>
+    route === 'relay'
+      ? send(route, PROXY_PATH, { ...authHeaders, 'x-ollama-base': base }, body, controller.signal)
+      : send(route, `${base}/api/chat`, authHeaders, body, controller.signal);
+
+  try {
+    let last: OllamaError | null = null;
+
+    for (const route of routes) {
       try {
-        const res = await send(`${base}/api/chat`, authHeaders, body, controller.signal);
-        return await consume(res, onToken);
+        return await consume(await attempt(route), onToken);
       } catch (err) {
-        const isNetwork = err instanceof TypeError;
-        if (!isNetwork || settings.connection === 'direct') throw err;
-        // Fall through to the proxy.
+        if (controller.signal.aborted) {
+          throw new OllamaError('The request was cancelled or timed out.');
+        }
+        const failure =
+          err instanceof OllamaError
+            ? err
+            : new OllamaError(err instanceof Error ? err.message : 'Unknown error calling Ollama.');
+        last = failure;
+        // A rejected key or a missing model fails the same way on either route.
+        if (!failure.retryOther) throw failure;
       }
     }
 
-    const res = await send(
-      PROXY_PATH,
-      { ...authHeaders, 'x-ollama-base': base },
-      body,
-      controller.signal,
-    );
-    return await consume(res, onToken);
-  } catch (err) {
-    if (controller.signal.aborted) {
-      throw new OllamaError('The request was cancelled or timed out.');
+    if (last && routes.length > 1) {
+      last.hint = `${last.hint ?? ''} Both routes were tried: through this site, and straight to ${base}.`.trim();
     }
-    if (err instanceof OllamaError) throw err;
-    if (err instanceof TypeError) {
-      throw new OllamaError(
-        `Could not reach ${base}.`,
-        'The browser blocked the call or the host is unreachable. Deploy the site to Cloudflare Pages, or set Connection to "Through proxy" in Settings. On a local Ollama server, start it with OLLAMA_ORIGINS set to your site address.',
-      );
-    }
-    throw new OllamaError(err instanceof Error ? err.message : 'Unknown error calling Ollama.');
+    throw last ?? new OllamaError('The request could not be sent.');
   } finally {
     clearTimeout(timer);
     external?.removeEventListener('abort', onAbort);

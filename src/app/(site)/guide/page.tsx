@@ -207,8 +207,12 @@ ollama serve`}
                     body: 'The model name does not exist on your account. Check the spelling of gemma4:31b-cloud, including the colon, or pick another model from the Ollama library.',
                   },
                   {
-                    title: 'Could not reach the server',
-                    body: 'The browser blocked the direct call. Set Connection to "Through this site" in Settings, which routes the request through the relay that ships with the deployed site. On a local server, start Ollama with OLLAMA_ORIGINS set to your site address.',
+                    title: 'The relay is not running on this site',
+                    body: 'Nothing is answering /api/ollama. Open that address in a browser tab: a deployed relay replies with a short JSON message. If it shows the 404 page instead, the functions folder was missing from the deployment. During local development the relay never runs under next dev, so use npm run preview.',
+                  },
+                  {
+                    title: 'The request never left the browser',
+                    body: 'An ad blocker or privacy extension is usually stopping it. Reload with extensions disabled, or add the site to their allow list. Note that a browser can never call ollama.com directly, whatever your extensions do, because it sends no CORS headers. That is what the relay is for.',
                   },
                   {
                     title: 'Text recognition is slow',

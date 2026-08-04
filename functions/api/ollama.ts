@@ -22,10 +22,20 @@ interface RequestBody {
 
 const ALLOWED_HOSTS = [/(^|\.)ollama\.com$/i, /^localhost$/i, /^127\.0\.0\.1$/];
 
+/**
+ * Every response carries this marker so the client can tell a reply from the
+ * relay apart from the site's own 404 page when the function is not deployed.
+ */
+const MARKER = { 'x-taxfillr-relay': '1' };
+
 function json(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      ...MARKER,
+    },
   });
 }
 
@@ -88,6 +98,7 @@ async function relay(request: Request): Promise<Response> {
     headers: {
       'content-type': upstream.headers.get('content-type') ?? 'application/json',
       'cache-control': 'no-store',
+      ...MARKER,
     },
   });
 }
@@ -97,7 +108,11 @@ export async function onRequest(context: Context): Promise<Response> {
 
   if (request.method === 'POST') return relay(request);
   if (request.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: { allow: 'POST, OPTIONS' } });
+    return new Response(null, { status: 204, headers: { allow: 'POST, OPTIONS', ...MARKER } });
+  }
+  // A plain GET is how you check from a browser that the relay is deployed.
+  if (request.method === 'GET') {
+    return json(200, { relay: 'ready', usage: 'POST a chat body with an Authorization header.' });
   }
   return json(405, { error: 'Use POST.' });
 }
