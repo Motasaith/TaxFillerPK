@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { Check, Download, Eye, EyeOff, KeyRound, Trash2, Upload, Zap } from 'lucide-react';
+import { AlertTriangle, Check, Download, Eye, EyeOff, KeyRound, Trash2, Upload, Zap } from 'lucide-react';
 import { PageHeader } from '@/components/app/AppShell';
 import { Button } from '@/components/ui/Button';
 import { Card, CardTitle, Field, Notice, Spinner } from '@/components/ui/Primitives';
@@ -10,7 +10,7 @@ import { ConfirmModal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { testConnection } from '@/lib/ai';
 import { downloadBlob } from '@/lib/format';
-import { OllamaError } from '@/lib/ollama';
+import { normaliseBase, OllamaError } from '@/lib/ollama';
 import { useStore, type BackupFile } from '@/lib/store';
 import type { ConnectionMode } from '@/lib/types';
 
@@ -31,6 +31,19 @@ const CONNECTION_OPTIONS: { value: ConnectionMode; label: string; hint: string }
     hint: 'Browser straight to the host, no relay. This cannot work with ollama.com, which sends no CORS headers. Use it only for a local Ollama started with OLLAMA_ORIGINS set.',
   },
 ];
+
+function hostOf(raw: string): string {
+  try {
+    return new URL(normaliseBase(raw)).hostname;
+  } catch {
+    return 'that host';
+  }
+}
+
+function isLocalHost(raw: string): boolean {
+  const host = hostOf(raw);
+  return host === 'localhost' || host === '127.0.0.1';
+}
 
 export function SettingsView() {
   const { settings, updateSettings, docs, notices, chat, importBackup, clearAll, ready } = useStore();
@@ -199,6 +212,22 @@ export function SettingsView() {
           <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-soft">
             {CONNECTION_OPTIONS.find((o) => o.value === form.connection)?.hint}
           </p>
+
+          {form.connection === 'direct' && !isLocalHost(form.baseUrl) ? (
+            <Notice tone="clay" icon={<AlertTriangle size={15} />} className="mt-3">
+              <p className="font-medium">This combination cannot work.</p>
+              <p className="mt-1 leading-relaxed">
+                A browser is not allowed to call {hostOf(form.baseUrl)} directly, so every request
+                will fail. Switch to Automatic, or point the base URL at a local Ollama server.
+              </p>
+              <button
+                onClick={() => setForm({ ...form, connection: 'auto' })}
+                className="mt-2 font-medium underline underline-offset-2"
+              >
+                Switch to Automatic
+              </button>
+            </Notice>
+          ) : null}
 
           <div className="mt-6 flex flex-wrap gap-2.5">
             <Button variant="primary" onClick={saveConnection}>

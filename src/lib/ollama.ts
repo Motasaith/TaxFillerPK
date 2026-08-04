@@ -302,8 +302,17 @@ export async function ollamaChat(opts: RequestOptions): Promise<string> {
       }
     }
 
-    if (last && routes.length > 1) {
-      last.hint = `${last.hint ?? ''} Both routes were tried: through this site, and straight to ${base}.`.trim();
+    if (last) {
+      // Forcing direct at a host that sends no CORS headers can never succeed,
+      // so name the setting rather than the symptom.
+      if (routes.length === 1 && routes[0] === 'direct' && !isLoopback(base)) {
+        last.message = 'Connection is set to "Always direct", which cannot work with ollama.com.';
+        last.hint =
+          'Open Settings, change Connection to "Automatic" and save. Only an Ollama server on your own machine can be called directly from a browser.';
+      } else if (routes.length > 1) {
+        last.hint =
+          `${last.hint ?? ''} Both routes were tried: through this site, and straight to ${base}.`.trim();
+      }
     }
     throw last ?? new OllamaError('The request could not be sent.');
   } finally {

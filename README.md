@@ -51,9 +51,14 @@ npm run dev
 
 Open http://localhost:3000.
 
-Note that `next dev` does not run Cloudflare Functions, so the relay at `/api/ollama` returns 404
-during development. Set Connection to **Direct only** in Settings while working locally, or use
-`npm run preview` (below) which serves the built site through Wrangler with functions enabled.
+Note that `next dev` does not run Cloudflare Functions, so the relay at `/api/ollama` is missing
+during development. That matters because **ollama.com answers a CORS preflight with 405 and no
+allow-origin header, so a browser can never call it directly**. The relay is the only route that
+works against Ollama Cloud, and the app defaults to it.
+
+For AI features while developing, either run `npm run preview` (below), which serves the built site
+through Wrangler with functions enabled, or point the base URL at a local Ollama server, which is
+the one case where a direct call works.
 
 To use a local Ollama server instead of the cloud:
 
